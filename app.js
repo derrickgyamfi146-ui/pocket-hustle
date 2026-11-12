@@ -47,3 +47,80 @@ function applyTheme(){document.body.classList.toggle('dark',!!state.settings.dar
 $('#sideNav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page)});$('#mobileNav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page)});document.addEventListener('click',e=>{const p=e.target.closest('[data-page]');if(p&&!p.closest('#sideNav')&&!p.closest('#mobileNav'))navigate(p.dataset.page);const a=e.target.closest('[data-action]');if(a)action(a.dataset.action,a.dataset.id)});$('#closeModal').onclick=closeModal;$('#cancelModal').onclick=closeModal;$('#modalBackdrop').addEventListener('click',e=>{if(e.target===$('#modalBackdrop'))closeModal()});$('#productSearch').addEventListener('input',renderProducts);$('#reportPeriod').addEventListener('change',renderReports);$('#themeToggle').onclick=async()=>{state.settings.dark=!state.settings.dark;applyTheme();await saveMeta('settings',state.settings)};$('#profileBtn').onclick=()=>navigate('settings');$('#salesTable').addEventListener('change',async e=>{const id=e.target.dataset.status;if(!id)return;const s=state.sales.find(x=>x.id===id);if(!s)return;const prev=s.status,next=e.target.value;if(next==='Cancelled'&&prev!=='Cancelled'){const p=state.products.find(x=>x.id===s.productId);if(p){p.stock+=s.qty;await put('products',p)}}else if(prev==='Cancelled'&&next!=='Cancelled'){const p=state.products.find(x=>x.id===s.productId);if(p){if(p.stock<s.qty){toast('Not enough stock to reactivate this sale.');e.target.value=prev;return}p.stock-=s.qty;await put('products',p)}}s.status=next;await put('sales',s);await load();toast('Order status updated')});
 ['buyCost','sellPrice','otherCost'].forEach(id=>$('#'+id).addEventListener('input',()=>{const cost=+$('#buyCost').value||0,price=+$('#sellPrice').value||0,other=+$('#otherCost').value||0;if(!$('#buyCost').value&&!$('#sellPrice').value){$('#profitResult').textContent='Enter your costs and selling price.';return}const profit=price-cost-other,margin=price?profit/price*100:0;$('#profitResult').innerHTML=`Profit per item<strong>${money(profit)}</strong>Profit margin: ${margin.toFixed(1)}%${profit<0?'<br>⚠ You would lose money at this price.':''}`}));['originalPrice','discountPercent'].forEach(id=>$('#'+id).addEventListener('input',()=>{const p=+$('#originalPrice').value,d=+$('#discountPercent').value;if(d>100){$('#discountResult').textContent='Discount cannot exceed 100%.';return}if(!$('#originalPrice').value||!$('#discountPercent').value){$('#discountResult').textContent='Enter a price and discount.';return}$('#discountResult').innerHTML=`New selling price<strong>${money(p*(1-d/100))}</strong>You save ${money(p*d/100)}.`}));
 (async()=>{try{db=await openDB();await load()}catch(e){console.error(e);toast('Storage is unavailable in this browser.')}})();if('serviceWorker'in navigator&&location.protocol.startsWith('http'))window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(console.warn));
+// Pocket Hustle - Restore Backup
+(function () {
+  const fileInput = document.getElementById('restoreFile');
+  const exportButton = document.querySelector('#page-settings [data-action="export-data"]');
+
+  if (!fileInput || !exportButton) return;
+
+  const restoreButton = document.createElement('button');
+  restoreButton.className = 'secondary-btn';
+  restoreButton.textContent = 'Restore backup';
+  restoreButton.type = 'button';
+  exportButton.parentElement.insertBefore(restoreButton, exportButton.nextSibling);
+
+  restoreButton.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    try {
+      const data = JSON.parse(await file.text());
+
+      if (
+        data.app !== 'Pocket Hustle' ||
+        !Array.isArray(data.products) ||
+        !Array.isArray(data.sales) ||
+        !Array.isArray(data.expenses) ||
+        !data.settings ||
+        typeof data.settings !== 'object' ||
+        ![...data.products, ...data.sales, ...data.expenses]
+          .every(item => item && item.id)
+      ) {
+        throw new Error('This is not a valid Pocket Hustle backup.');
+      }
+
+      if (!confirm(
+        'Restoring this backup will replace your current business records. Continue?'
+      )) return;
+
+      const tx = db.transaction(
+        ['products', 'sales', 'expenses', 'meta'],
+        'readwrite'
+      );
+
+      ['products', 'sales', 'expenses', 'meta'].forEach(name => {
+        tx.objectStore(name).clear();
+      });
+
+      data.products.forEach(item => tx.objectStore('products').put(item));
+      data.sales.forEach(item => tx.objectStore('sales').put(item));
+      data.expenses.forEach(item => tx.objectStore('expenses').put(item));
+
+      tx.objectStore('meta').put({
+        key: 'settings',
+        value: data.settings
+      });
+
+      tx.objectStore('meta').put({
+        key: 'goal',
+        value: data.goal || null
+      });
+
+      tx.oncomplete = async () => {
+        await load();
+        toast('Backup restored successfully!');
+      };
+
+      tx.onerror = () => toast('Restore failed. Your data was not fully restored.');
+      tx.onabort = () => toast('Restore cancelled because of a storage error.');
+
+    } catch (error) {
+      toast(error.message || 'Could not read this backup.');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+})();
